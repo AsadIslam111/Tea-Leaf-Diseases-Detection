@@ -1,6 +1,5 @@
 ---
 title: Tea Leaf Disease Classifier
-emoji: 🍃
 colorFrom: green
 colorTo: yellow
 sdk: gradio
