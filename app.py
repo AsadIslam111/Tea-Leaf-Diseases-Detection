@@ -158,14 +158,30 @@ def predict_and_format(image):
     # Sort by confidence (descending) and take top 5
     sorted_results = sorted(results.items(), key=lambda x: x[1], reverse=True)[:5]
     top_label, top_conf = sorted_results[0]
+    
+    # --- Confidence Threshold Check ---
+    # If the top prediction is too low, it's likely not a tea leaf image (OOD).
+    THRESHOLD = 0.45
+    is_low_confidence = top_conf < THRESHOLD
 
     # Build HTML output with bar chart
     html = f"<div style='font-family:sans-serif; padding:8px;'>"
-    html += f"<h3 style='margin:0 0 16px 0; color:#2d7d46;'>🍃 {top_label} ({top_conf*100:.1f}%)</h3>"
+    
+    if is_low_confidence:
+        html += f"<div style='background:#fff3cd; border-left:4px solid #ffc107; padding:12px; border-radius:4px; margin-bottom:16px;'>"
+        html += f"<p style='margin:0; color:#856404; font-size:14px;'>⚠️ <b>Low Confidence:</b> The model is unsure if this is a tea leaf. "
+        html += f"Please ensure the image is clear and specifically of a tea leaf surface.</p></div>"
+        title_color = "#856404"
+    else:
+        title_color = "#2d7d46"
+
+    html += f"<h3 style='margin:0 0 16px 0; color:{title_color};'>🍃 {top_label} ({top_conf*100:.1f}%)</h3>"
 
     for label, conf in sorted_results:
         pct = conf * 100
-        bar_color = "#2d7d46" if conf == top_conf else "#4a9960"
+        # Dim colors if low confidence
+        bar_color = "#ffc107" if is_low_confidence else ("#2d7d46" if conf == top_conf else "#4a9960")
+        
         html += f"""
         <div style='margin-bottom:8px;'>
             <div style='display:flex; justify-content:space-between; margin-bottom:2px;'>
@@ -186,8 +202,9 @@ def predict_and_format(image):
 with gr.Blocks(theme=gr.themes.Soft(), title="Tea Leaf Disease Classifier") as demo:
     gr.Markdown("""
     # 🍃 Tea Leaf Disease Classifier
-    Upload a tea leaf image to identify diseases using a **Swin Transformer** deep learning model.
-    This model classifies **12 types** of tea leaf conditions and achieves **~94% test accuracy**.
+    Upload a tea leaf image to identify diseases using a **Swin Transformer** model.
+    
+    ⚠️ **Important:** This model is specifically trained on tea leaf images. Uploading human faces, animals, or other random objects will produce inaccurate results as the model tries to map them to leaf diseases.
     """)
 
     with gr.Row():
