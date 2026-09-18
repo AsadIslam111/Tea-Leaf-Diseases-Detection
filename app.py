@@ -11,6 +11,7 @@ import torch
 import torch.nn as nn
 from torchvision import transforms
 from ultralytics import YOLO
+import google.generativeai as genai
 
 # ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -116,6 +117,23 @@ except Exception as e:
     model = None
     MODEL_LOADED = False
 
+# ─── Gemini Setup ───────────────────────────────────────────────────────────
+
+gemini_api_key = os.environ.get("GEMINI_API_KEY")
+if gemini_api_key:
+    try:
+        genai.configure(api_key=gemini_api_key)
+        # using the faster flash model
+        gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+        GEMINI_AVAILABLE = True
+        print("✅ Gemini API configured successfully!")
+    except Exception as e:
+        print(f"❌ Error configuring Gemini API: {e}")
+        GEMINI_AVAILABLE = False
+else:
+    print("⚠️ GEMINI_API_KEY not found in environment variables. OOD filtering disabled.")
+    GEMINI_AVAILABLE = False
+
 # ─── Prediction Function ────────────────────────────────────────────────────
 
 def predict(image):
@@ -127,6 +145,20 @@ def predict(image):
     # Gradio passes a numpy array; convert to PIL
     try:
         pil_img = Image.fromarray(image)
+        
+        # --- Gemini OOD Filter ---
+        if GEMINI_AVAILABLE:
+            try:
+                response = gemini_model.generate_content(
+                    ["Is this an image of a leaf? Answer only YES or NO.", pil_img]
+                )
+                answer = response.text.strip().upper()
+                if "NO" in answer:
+                    return {"Error: This does not appear to be a leaf. Please upload a valid tea leaf image.": 1.0}
+            except Exception as e:
+                print(f"Gemini API check failed: {e}")
+                # Fall back to YOLO if Gemini fails
+        
         input_tensor = evaluation_transform(pil_img).unsqueeze(0).to(DEVICE)
         
         with torch.no_grad():
