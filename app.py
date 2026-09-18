@@ -244,7 +244,22 @@ def predict_and_format(image):
 
 # ─── Gradio Blocks App ──────────────────────────────────────────────────────
 
-with gr.Blocks(theme=gr.themes.Soft(primary_hue="green", secondary_hue="emerald"), title="Tea Leaf Disease Classifier") as demo:
+# JavaScript to permanently force light mode by removing the 'dark' class
+force_light_mode_js = """
+function() {
+    document.body.classList.remove('dark');
+    const observer = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
+            if (mutation.attributeName === 'class' && document.body.classList.contains('dark')) {
+                document.body.classList.remove('dark');
+            }
+        });
+    });
+    observer.observe(document.body, { attributes: true });
+}
+"""
+
+with gr.Blocks(theme=gr.themes.Soft(primary_hue="green", secondary_hue="emerald"), js=force_light_mode_js, title="Tea Leaf Disease Classifier") as demo:
     gr.HTML("""
     <div style='text-align: center; max-width: 800px; margin: 0 auto; padding-top: 10px; padding-bottom: 20px;'>
         <h1 style='color: #2d7d46; font-size: 2.8rem; margin-bottom: 0.5rem;'>🍃 Tea Leaf Disease Classifier</h1>
