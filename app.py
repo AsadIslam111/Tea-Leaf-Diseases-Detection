@@ -1,11 +1,15 @@
 """
 Tea Leaf Disease Classifier — Hugging Face Space
-YOLO11 model for classifying 12 types of tea leaf diseases.
+Custom PyTorch YOLO11m-Backbone Classifier for 12 types of tea leaf diseases.
 """
 
 import os
 import numpy as np
 import gradio as gr
+from PIL import Image
+import torch
+import torch.nn as nn
+from torchvision import transforms
 from ultralytics import YOLO
 
 # ─── Constants ───────────────────────────────────────────────────────────────
@@ -25,7 +29,6 @@ CLASSES = [
     "white_spot",
 ]
 
-# Human-readable labels for display
 DISPLAY_LABELS = {
     "algal_spot": "Algal Spot",
     "anthracnose": "Anthracnose",
@@ -43,18 +46,68 @@ DISPLAY_LABELS = {
 
 NUM_CLASSES = len(CLASSES)
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "best.pt")
+DEVICE = torch.device("cpu") # Hugging Face basic CPU instance
+
+# ─── Model Architecture ──────────────────────────────────────────────────────
+
+class YOLO11BackboneClassifier(nn.Module):
+    def __init__(self, detector_model, num_classes, dropout=0.40, image_size=256):
+        super().__init__()
+        # Extract backbone feature extraction layers from YOLO11 detector
+        self.backbone = nn.ModuleList(list(detector_model.model[:11]))
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        
+        with torch.no_grad():
+            dummy = torch.zeros(1, 3, image_size, image_size)
+            x = dummy
+            for layer in self.backbone:
+                x = layer(x)
+            feature_channels = x.shape[1]
+            
+        self.classifier = nn.Sequential(
+            nn.Dropout(p=dropout),
+            nn.Linear(feature_channels, num_classes)
+        )
+
+    def forward(self, x):
+        for layer in self.backbone:
+            x = layer(x)
+        x = self.pool(x)
+        x = torch.flatten(x, 1)
+        return self.classifier(x)
+
+# ─── Preprocessing ──────────────────────────────────────────────────────────
+
+evaluation_transform = transforms.Compose([
+    transforms.Resize((256, 256)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+])
 
 # ─── Load Model ─────────────────────────────────────────────────────────────
 
 try:
-    print(f"📂 Loading YOLO weights from: {MODEL_PATH}")
-    model = YOLO(MODEL_PATH)
+    print("📂 Downloading standard yolo11m backbone...")
+    yolo_detector = YOLO("yolo11m.pt")
+    detector_raw = yolo_detector.model.float().eval()
+    
+    print(f"📂 Building Custom YOLO11m Classifier Architecture...")
+    model = YOLO11BackboneClassifier(
+        detector_model=detector_raw,
+        num_classes=NUM_CLASSES,
+        dropout=0.40,
+        image_size=256
+    ).to(DEVICE)
+    
+    print(f"📂 Loading Custom trained weights from: {MODEL_PATH}")
+    checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+    
+    # Cleanup memory
+    del detector_raw, yolo_detector
+    
     print("✅ Model loaded successfully!")
-
-    # Warm up the model with a dummy prediction
-    dummy = np.zeros((224, 224, 3), dtype=np.uint8)
-    model(dummy, verbose=False)
-    print("✅ Model warmup complete!")
     MODEL_LOADED = True
 except Exception as e:
     print(f"❌ Error loading model: {e}")
@@ -63,65 +116,48 @@ except Exception as e:
     model = None
     MODEL_LOADED = False
 
-
 # ─── Prediction Function ────────────────────────────────────────────────────
 
-
 def predict(image):
-    """
-    Classify a tea leaf image.
-
-    Args:
-        image: Input image as a numpy array.
-
-    Returns:
-        Dictionary mapping class labels to confidence scores.
-    """
     if image is None:
         return {}
-
     if not MODEL_LOADED:
         return {"Error: Model not loaded": 1.0}
 
-    # Run inference
-    results = model(image, verbose=False)
-    
-    if len(results) > 0 and results[0].probs is not None:
-        probs = results[0].probs.data.cpu().numpy()
+    # Gradio passes a numpy array; convert to PIL
+    try:
+        pil_img = Image.fromarray(image)
+        input_tensor = evaluation_transform(pil_img).unsqueeze(0).to(DEVICE)
         
-        # Build result dictionary with human-readable labels
-        # YOLO usually sorts class names alphabetically or by training ID. 
-        # `results[0].names` holds the dictionary mapping id -> name
+        with torch.no_grad():
+            logits = model(input_tensor)
+            probs = torch.softmax(logits, dim=1)[0].cpu().numpy()
+            
         result_dict = {}
+        # We assume the training class order matches CLASSES alphabetically
+        # based on ImageFolder loading
         for idx, prob in enumerate(probs):
-            cls_name = results[0].names[idx]
+            cls_name = CLASSES[idx]
             display_name = DISPLAY_LABELS.get(cls_name, cls_name)
             result_dict[display_name] = float(prob)
         return result_dict
-    else:
-        return {"Error: Could not predict probabilities": 1.0}
-
+    except Exception as e:
+        return {f"Error processing image: {e}": 1.0}
 
 # ─── Prediction (HTML output) ────────────────────────────────────────────────
 
-
 def predict_and_format(image):
-    """Classify a tea leaf image and return formatted HTML results."""
     results = predict(image)
     if not results or "Error" in list(results.keys())[0]:
         error_msg = list(results.keys())[0] if results else "Please upload an image."
-        return f"<p style='color:#888;'>{error_msg}</p>"
+        return f"<div style='color:#888; text-align:center; padding: 20px;'>{error_msg}</div>"
 
-    # Sort by confidence (descending) and take top 5
     sorted_results = sorted(results.items(), key=lambda x: x[1], reverse=True)[:5]
     top_label, top_conf = sorted_results[0]
     
-    # --- Confidence Threshold Check ---
-    # If the top prediction is too low, it's likely not a tea leaf image (OOD).
     THRESHOLD = 0.45
     is_low_confidence = top_conf < THRESHOLD
 
-    # Build HTML output with bar chart
     html = f"<div style='font-family:sans-serif; padding:8px;'>"
     
     if is_low_confidence:
@@ -136,7 +172,6 @@ def predict_and_format(image):
 
     for label, conf in sorted_results:
         pct = conf * 100
-        # Dim colors if low confidence
         bar_color = "#ffc107" if is_low_confidence else ("#2d7d46" if conf == top_conf else "#4a9960")
         
         html += f"""
@@ -153,16 +188,14 @@ def predict_and_format(image):
     html += "</div>"
     return html
 
-
 # ─── Gradio Blocks App ──────────────────────────────────────────────────────
 
 with gr.Blocks(theme=gr.themes.Soft(primary_hue="green", secondary_hue="emerald"), title="Tea Leaf Disease Classifier") as demo:
-    # Header Section
     gr.HTML("""
     <div style='text-align: center; max-width: 800px; margin: 0 auto; padding-top: 10px; padding-bottom: 20px;'>
         <h1 style='color: #2d7d46; font-size: 2.8rem; margin-bottom: 0.5rem;'>🍃 Tea Leaf Disease Classifier</h1>
         <p style='font-size: 1.1rem; color: #555;'>
-            An advanced computer vision diagnostic tool powered by <b>YOLO11m</b> to instantly detect and classify 12 distinct conditions in tea leaves.
+            An advanced computer vision diagnostic tool powered by a custom <b>YOLO11m Backbone</b> to instantly detect and classify 12 distinct conditions in tea leaves.
         </p>
     </div>
     """)
@@ -181,7 +214,6 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="green", secondary_hue="emerald"
             gr.Markdown("### 📊 Detection Results")
             output_html = gr.HTML(value="<div style='color: #999; text-align: center; padding: 40px; border: 2px dashed #eee; border-radius: 8px;'>Upload an image to see the diagnostic analysis.</div>")
 
-    # Connect the inputs and outputs
     submit_btn.click(
         fn=predict_and_format,
         inputs=image_input,
@@ -195,13 +227,12 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="green", secondary_hue="emerald"
         api_name=False,
     )
 
-    # Informational Sections
     with gr.Row():
         with gr.Column():
             with gr.Accordion("📚 About the Model & Dataset", open=False):
                 gr.Markdown("""
                 ### Model Architecture
-                This application runs on the state-of-the-art **YOLO11m** architecture. It was trained on a robust dataset of over **22,000 augmented images**, explicitly designed to handle real-world agricultural challenges like low-light conditions, heavy shadows, and sensor noise.
+                This application runs on a custom classifier built on top of the state-of-the-art **YOLO11m** backbone architecture. It was trained on a robust dataset of over **22,000 augmented images**, explicitly designed to handle real-world agricultural challenges like low-light conditions, heavy shadows, and sensor noise.
                 
                 **Key Metrics:**
                 - **Test Accuracy:** ~96.1%
