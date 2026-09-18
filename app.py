@@ -1,27 +1,14 @@
 """
 Tea Leaf Disease Classifier — Hugging Face Space
-Swin Transformer model for classifying 12 types of tea leaf diseases.
-Optimized for low-light conditions.
+YOLO11 model for classifying 12 types of tea leaf diseases.
 """
 
 import os
-
-# Force Keras 2 legacy mode (required for the SwinTransformer package)
-os.environ["TF_USE_LEGACY_KERAS"] = "1"
-
-import sys
 import numpy as np
 import gradio as gr
-
-# Add the local swintransformer package to the path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import tensorflow as tf
-from swintransformer import SwinTransformer
+from ultralytics import YOLO
 
 # ─── Constants ───────────────────────────────────────────────────────────────
-
-IMAGE_SIZE = (224, 224)
 
 CLASSES = [
     "algal_spot",
@@ -35,7 +22,7 @@ CLASSES = [
     "red_leaf_spot",
     "red_rust",
     "red_spider",
-    "white spot",
+    "white_spot",
 ]
 
 # Human-readable labels for display
@@ -51,55 +38,22 @@ DISPLAY_LABELS = {
     "red_leaf_spot": "Red Leaf Spot",
     "red_rust": "Red Rust",
     "red_spider": "Red Spider",
-    "white spot": "White Spot",
+    "white_spot": "White Spot",
 }
 
 NUM_CLASSES = len(CLASSES)
-MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "best_swin.h5")
+MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "best.pt")
 
-# ─── Build Model ─────────────────────────────────────────────────────────────
-
-
-def build_model():
-    """Rebuild the exact same architecture used during training."""
-    preprocess = tf.keras.layers.Lambda(
-        lambda x: tf.keras.applications.imagenet_utils.preprocess_input(
-            tf.cast(x, tf.float32), mode="torch"
-        ),
-        input_shape=[*IMAGE_SIZE, 3],
-    )
-
-    swin = SwinTransformer(
-        "swin_tiny_224",
-        num_classes=NUM_CLASSES,
-        include_top=False,
-        pretrained=False,
-        use_tpu=False,
-    )
-
-    model = tf.keras.Sequential(
-        [
-            preprocess,
-            swin,
-            tf.keras.layers.Dropout(0.3),
-            tf.keras.layers.Dense(NUM_CLASSES, activation="softmax"),
-        ]
-    )
-
-    return model
-
+# ─── Load Model ─────────────────────────────────────────────────────────────
 
 try:
-    print("🔨 Building model...")
-    model = build_model()
-
-    print(f"📂 Loading weights from: {MODEL_PATH}")
-    model.load_weights(MODEL_PATH)
+    print(f"📂 Loading YOLO weights from: {MODEL_PATH}")
+    model = YOLO(MODEL_PATH)
     print("✅ Model loaded successfully!")
 
     # Warm up the model with a dummy prediction
-    dummy = np.zeros((1, 224, 224, 3), dtype=np.float32)
-    model.predict(dummy, verbose=0)
+    dummy = np.zeros((224, 224, 3), dtype=np.uint8)
+    model(dummy, verbose=False)
     print("✅ Model warmup complete!")
     MODEL_LOADED = True
 except Exception as e:
@@ -118,7 +72,7 @@ def predict(image):
     Classify a tea leaf image.
 
     Args:
-        image: Input image as a numpy array (H, W, 3) with values in [0, 255].
+        image: Input image as a numpy array.
 
     Returns:
         Dictionary mapping class labels to confidence scores.
@@ -129,21 +83,23 @@ def predict(image):
     if not MODEL_LOADED:
         return {"Error: Model not loaded": 1.0}
 
-    # Resize to the expected input size
-    img = tf.image.resize(image, IMAGE_SIZE)
-    img = tf.expand_dims(img, axis=0)  # Add batch dimension
-
     # Run inference
-    predictions = model.predict(img, verbose=0)
-    probs = predictions[0]
-
-    # Build result dictionary with human-readable labels
-    results = {}
-    for cls_name, prob in zip(CLASSES, probs):
-        display_name = DISPLAY_LABELS.get(cls_name, cls_name)
-        results[display_name] = float(prob)
-
-    return results
+    results = model(image, verbose=False)
+    
+    if len(results) > 0 and results[0].probs is not None:
+        probs = results[0].probs.data.cpu().numpy()
+        
+        # Build result dictionary with human-readable labels
+        # YOLO usually sorts class names alphabetically or by training ID. 
+        # `results[0].names` holds the dictionary mapping id -> name
+        result_dict = {}
+        for idx, prob in enumerate(probs):
+            cls_name = results[0].names[idx]
+            display_name = DISPLAY_LABELS.get(cls_name, cls_name)
+            result_dict[display_name] = float(prob)
+        return result_dict
+    else:
+        return {"Error: Could not predict probabilities": 1.0}
 
 
 # ─── Prediction (HTML output) ────────────────────────────────────────────────
@@ -152,8 +108,9 @@ def predict(image):
 def predict_and_format(image):
     """Classify a tea leaf image and return formatted HTML results."""
     results = predict(image)
-    if not results:
-        return "<p style='color:#888;'>Please upload an image.</p>"
+    if not results or "Error" in list(results.keys())[0]:
+        error_msg = list(results.keys())[0] if results else "Please upload an image."
+        return f"<p style='color:#888;'>{error_msg}</p>"
 
     # Sort by confidence (descending) and take top 5
     sorted_results = sorted(results.items(), key=lambda x: x[1], reverse=True)[:5]
@@ -202,7 +159,7 @@ def predict_and_format(image):
 with gr.Blocks(theme=gr.themes.Soft(), title="Tea Leaf Disease Classifier") as demo:
     gr.Markdown("""
     # 🍃 Tea Leaf Disease Classifier
-    Upload a tea leaf image to identify diseases using a **Swin Transformer** model.
+    Upload a tea leaf image to identify diseases using a **YOLO11** model.
     
     ⚠️ **Important:** This model is specifically trained on tea leaf images. Uploading human faces, animals, or other random objects will produce inaccurate results as the model tries to map them to leaf diseases.
     """)
@@ -235,8 +192,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Tea Leaf Disease Classifier") as d
 
     gr.Markdown("""
     ### Model Details
-    - **Architecture**: Swin Transformer (Tiny, 224×224)
-    - **Training**: 25 epochs with AdamW + Cosine Decay LR
+    - **Architecture**: YOLO11m
     - **Classes**: Algal Spot, Anthracnose, Bird Eye Spot, Brown Blight, Gray Blight,
       Green Mirid Bug, Healthy, Helopeltis, Red Leaf Spot, Red Rust, Red Spider, White Spot
 
