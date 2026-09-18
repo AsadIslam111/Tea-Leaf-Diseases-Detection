@@ -120,11 +120,11 @@ except Exception as e:
 # ─── Gemini Setup ───────────────────────────────────────────────────────────
 
 gemini_api_key = os.environ.get("GEMINI_API_KEY")
+print(f"🔑 GEMINI_API_KEY present: {bool(gemini_api_key)}, length: {len(gemini_api_key) if gemini_api_key else 0}")
 if gemini_api_key:
     try:
         genai.configure(api_key=gemini_api_key)
-        # using the faster flash model
-        gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+        gemini_model = genai.GenerativeModel('gemini-2.0-flash')
         GEMINI_AVAILABLE = True
         print("✅ Gemini API configured successfully!")
     except Exception as e:
@@ -149,15 +149,21 @@ def predict(image):
         # --- Gemini OOD Filter ---
         if GEMINI_AVAILABLE:
             try:
+                print("🔍 Running Gemini OOD check...")
                 response = gemini_model.generate_content(
-                    ["Is this an image of a leaf? Answer only YES or NO.", pil_img]
+                    ["Look at this image carefully. Is this image of a plant leaf or part of a plant? If it shows a human, animal, vehicle, electronics, food, or any non-plant object, answer NO. Only answer YES if it clearly shows a leaf or plant. Answer with a single word: YES or NO.", pil_img]
                 )
                 answer = response.text.strip().upper()
+                print(f"🔍 Gemini response: '{answer}'")
                 if "NO" in answer:
-                    return {"Error: This does not appear to be a leaf. Please upload a valid tea leaf image.": 1.0}
+                    return {"OOD_REJECTED": True}
             except Exception as e:
                 print(f"Gemini API check failed: {e}")
+                import traceback
+                traceback.print_exc()
                 # Fall back to YOLO if Gemini fails
+        else:
+            print("⚠️ Gemini not available, skipping OOD check")
         
         input_tensor = evaluation_transform(pil_img).unsqueeze(0).to(DEVICE)
         
@@ -180,8 +186,24 @@ def predict(image):
 
 def predict_and_format(image):
     results = predict(image)
-    if not results or "Error" in list(results.keys())[0]:
-        error_msg = list(results.keys())[0] if results else "Please upload an image."
+    if not results:
+        return "<div style='color:#888; text-align:center; padding: 20px;'>Please upload an image.</div>"
+    
+    # Check for OOD rejection from Gemini
+    if "OOD_REJECTED" in results:
+        return """
+        <div style='background: linear-gradient(135deg, #ff4444 0%, #cc0000 100%); border-radius: 12px; padding: 24px; margin: 10px 0; text-align: center;'>
+            <div style='font-size: 48px; margin-bottom: 12px;'>🚫</div>
+            <h3 style='color: white; margin: 0 0 8px 0; font-size: 1.3rem;'>Not a Leaf Image</h3>
+            <p style='color: rgba(255,255,255,0.9); margin: 0; font-size: 0.95rem;'>
+                This image does not appear to be a tea leaf.<br>
+                Please upload a clear photo of a tea leaf for accurate disease diagnosis.
+            </p>
+        </div>
+        """
+    
+    if "Error" in list(results.keys())[0]:
+        error_msg = list(results.keys())[0]
         return f"<div style='color:#888; text-align:center; padding: 20px;'>{error_msg}</div>"
 
     sorted_results = sorted(results.items(), key=lambda x: x[1], reverse=True)[:5]
