@@ -156,33 +156,38 @@ def predict_and_format(image):
 
 # ─── Gradio Blocks App ──────────────────────────────────────────────────────
 
-with gr.Blocks(theme=gr.themes.Soft(), title="Tea Leaf Disease Classifier") as demo:
-    gr.Markdown("""
-    # 🍃 Tea Leaf Disease Classifier
-    Upload a tea leaf image to identify diseases using a **YOLO11** model.
-    
-    ⚠️ **Important:** This model is specifically trained on tea leaf images. Uploading human faces, animals, or other random objects will produce inaccurate results as the model tries to map them to leaf diseases.
+with gr.Blocks(theme=gr.themes.Soft(primary_hue="green", secondary_hue="emerald"), title="Tea Leaf Disease Classifier") as demo:
+    # Header Section
+    gr.HTML("""
+    <div style='text-align: center; max-width: 800px; margin: 0 auto; padding-top: 10px; padding-bottom: 20px;'>
+        <h1 style='color: #2d7d46; font-size: 2.8rem; margin-bottom: 0.5rem;'>🍃 Tea Leaf Disease Classifier</h1>
+        <p style='font-size: 1.1rem; color: #555;'>
+            An advanced computer vision diagnostic tool powered by <b>YOLO11m</b> to instantly detect and classify 12 distinct conditions in tea leaves.
+        </p>
+    </div>
     """)
 
     with gr.Row():
-        with gr.Column():
+        with gr.Column(scale=1):
+            gr.Markdown("### 📸 Upload Leaf Image")
+            gr.Markdown("For best results, upload a clear, focused photo of a single tea leaf.")
             image_input = gr.Image(
-                label="Upload Tea Leaf Image",
+                label="",
                 type="numpy",
             )
-            submit_btn = gr.Button("🔍 Classify", variant="primary", size="lg")
+            submit_btn = gr.Button("🔍 Analyze Leaf", variant="primary", size="lg")
 
-        with gr.Column():
-            output_html = gr.HTML(label="Prediction Results")
+        with gr.Column(scale=1):
+            gr.Markdown("### 📊 Detection Results")
+            output_html = gr.HTML(value="<div style='color: #999; text-align: center; padding: 40px; border: 2px dashed #eee; border-radius: 8px;'>Upload an image to see the diagnostic analysis.</div>")
 
+    # Connect the inputs and outputs
     submit_btn.click(
         fn=predict_and_format,
         inputs=image_input,
         outputs=output_html,
         api_name=False,
     )
-
-    # Also trigger on image upload
     image_input.change(
         fn=predict_and_format,
         inputs=image_input,
@@ -190,14 +195,30 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Tea Leaf Disease Classifier") as d
         api_name=False,
     )
 
-    gr.Markdown("""
-    ### Model Details
-    - **Architecture**: YOLO11m
-    - **Classes**: Algal Spot, Anthracnose, Bird Eye Spot, Brown Blight, Gray Blight,
-      Green Mirid Bug, Healthy, Helopeltis, Red Leaf Spot, Red Rust, Red Spider, White Spot
-
-    > For best results, use images with clear visibility of the leaf surface.
-    """)
+    # Informational Sections
+    with gr.Row():
+        with gr.Column():
+            with gr.Accordion("📚 About the Model & Dataset", open=False):
+                gr.Markdown("""
+                ### Model Architecture
+                This application runs on the state-of-the-art **YOLO11m** architecture. It was trained on a robust dataset of over **22,000 augmented images**, explicitly designed to handle real-world agricultural challenges like low-light conditions, heavy shadows, and sensor noise.
+                
+                **Key Metrics:**
+                - **Test Accuracy:** ~96.1%
+                - **Classes Detected:** 12
+                
+                ### The 12 Classifications
+                * **Diseases:** Algal Spot, Anthracnose, Bird Eye Spot, Brown Blight, Gray Blight, Helopeltis, Red Leaf Spot, Red Rust, White Spot
+                * **Pests/Insects:** Green Mirid Bug, Red Spider
+                * **Healthy:** Clean, disease-free leaves
+                """)
+                
+        with gr.Column():
+            with gr.Accordion("⚠️ Important Usage Notes", open=False):
+                gr.Markdown("""
+                - **Out-of-Distribution (OOD) Data:** This model is strictly trained on tea leaves. If you upload a picture of a human face, an animal, or a random object, the model will still mathematically force it into a leaf disease category. A low-confidence warning banner will appear if the model is unsure.
+                - **Lighting & Focus:** While the model was trained with advanced low-light augmentation, extremely dark, completely blurry, or highly obscured images will naturally reduce diagnostic accuracy. 
+                """)
 
 if __name__ == "__main__":
     demo.launch(ssr_mode=False)
