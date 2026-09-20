@@ -151,11 +151,13 @@ def predict(image):
             try:
                 print("🔍 Running Gemini OOD check...")
                 response = gemini_model.generate_content(
-                    ["Look at this image carefully. Is this image of a plant leaf or part of a plant? If it shows a human, animal, vehicle, electronics, food, or any non-plant object, answer NO. Only answer YES if it clearly shows a leaf or plant. Answer with a single word: YES or NO.", pil_img]
+                    ["You are a strict image classifier. Look at this image. If the image is NOT a clear photo of a plant leaf or tea leaf, you must output 'NO'. This includes humans, animals, computers, electronics, landscapes, memes, and any other objects. Only output 'YES' if the main subject is a plant leaf. Output ONLY ONE WORD: 'YES' or 'NO'.", pil_img]
                 )
                 answer = response.text.strip().upper()
                 print(f"🔍 Gemini response: '{answer}'")
-                if "NO" in answer:
+                
+                # If Gemini explicitly says NO, or fails to explicitly say YES
+                if "NO" in answer or "YES" not in answer:
                     return {"OOD_REJECTED": True}
             except Exception as e:
                 print(f"Gemini API check failed: {e}")
