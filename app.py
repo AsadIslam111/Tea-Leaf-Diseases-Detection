@@ -127,8 +127,7 @@ print(f"🔑 GEMINI_API_KEY present: {bool(gemini_api_key)}, length: {len(gemini
 
 GEMINI_AVAILABLE = False
 GEMINI_STATUS_LABEL = "Offline (Key Missing)"
-CANDIDATE_MODELS = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-1.5-flash", "gemini-flash"]
-active_model_name = "gemini-3.6-flash"
+cached_gemini_model = None
 
 if gemini_api_key:
     try:
@@ -145,10 +144,67 @@ else:
     GEMINI_STATUS_LABEL = "Offline (GEMINI_API_KEY missing in Space Secrets)"
     GEMINI_AVAILABLE = False
 
+def call_gemini_ood(pil_img):
+    global cached_gemini_model
+    prompt = (
+        "You are a strict plant leaf detector. Examine this image carefully.\n"
+        "Question: Is the main subject of this image clearly a plant leaf, tea leaf, or plant foliage?\n"
+        "- If the image contains a human, person, face, animal, computer, phone, electronic device, furniture, vehicle, cartoon, meme, or any other non-plant object, you MUST answer NO.\n"
+        "- Only answer YES if the image clearly and primarily shows a plant leaf or foliage.\n"
+        "Answer ONLY with a single word: YES or NO."
+    )
+    gen_config = {"temperature": 0.0, "max_output_tokens": 10}
+
+    # If we already have a working model, try it first
+    if cached_gemini_model is not None:
+        try:
+            return cached_gemini_model.generate_content([prompt, pil_img], generation_config=gen_config)
+        except Exception as e:
+            print(f"⚠️ Cached model failed ({e}), re-discovering available models...")
+            cached_gemini_model = None
+
+    # Discover available models dynamically via ModelService.ListModels
+    candidate_names = []
+    try:
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                candidate_names.append(m.name)
+        print(f"📋 Available Gemini models from API: {candidate_names}")
+    except Exception as e:
+        print(f"⚠️ Failed to list models dynamically: {e}")
+
+    if not candidate_names:
+        candidate_names = [
+            "gemini-1.5-flash",
+            "gemini-1.5-flash-latest",
+            "gemini-1.5-pro",
+            "models/gemini-1.5-flash",
+            "models/gemini-1.5-pro",
+        ]
+
+    # Prioritize flash models first for fast inference
+    flash_models = [m for m in candidate_names if 'flash' in m.lower()]
+    other_models = [m for m in candidate_names if 'flash' not in m.lower()]
+    ordered_candidates = flash_models + other_models
+
+    last_err = None
+    for m_name in ordered_candidates:
+        try:
+            print(f"🔄 Trying Gemini model: {m_name}...")
+            g_model = genai.GenerativeModel(m_name)
+            resp = g_model.generate_content([prompt, pil_img], generation_config=gen_config)
+            cached_gemini_model = g_model
+            print(f"✅ Successfully verified with model: {m_name}")
+            return resp
+        except Exception as err:
+            last_err = err
+            print(f"⚠️ Model {m_name} failed: {err}")
+
+    raise last_err
+
 # ─── Prediction Function ────────────────────────────────────────────────────
 
 def predict(image):
-    global active_model_name
     if image is None:
         return {}
     if not MODEL_LOADED:
@@ -161,35 +217,8 @@ def predict(image):
         # --- Gemini OOD Filter ---
         if GEMINI_AVAILABLE:
             try:
-                print(f"🔍 Running Gemini OOD check (trying {active_model_name})...")
-                prompt = (
-                    "You are a strict plant leaf detector. Examine this image carefully.\n"
-                    "Question: Is the main subject of this image clearly a plant leaf, tea leaf, or plant foliage?\n"
-                    "- If the image contains a human, person, face, animal, computer, phone, electronic device, furniture, vehicle, cartoon, meme, or any other non-plant object, you MUST answer NO.\n"
-                    "- Only answer YES if the image clearly and primarily shows a plant leaf or foliage.\n"
-                    "Answer ONLY with a single word: YES or NO."
-                )
-                
-                # Try active model, fallback to others if model is retired/unavailable
-                response = None
-                last_err = None
-                models_to_try = [active_model_name] + [m for m in CANDIDATE_MODELS if m != active_model_name]
-                
-                for m_name in models_to_try:
-                    try:
-                        g_model = genai.GenerativeModel(m_name)
-                        response = g_model.generate_content(
-                            [prompt, pil_img],
-                            generation_config={"temperature": 0.0, "max_output_tokens": 10},
-                        )
-                        active_model_name = m_name
-                        break
-                    except Exception as err:
-                        last_err = err
-                        print(f"⚠️ Model {m_name} failed: {err}")
-                
-                if response is None:
-                    raise last_err
+                print("🔍 Running Gemini OOD check...")
+                response = call_gemini_ood(pil_img)
                 
                 # Check response text safely
                 answer = ""
