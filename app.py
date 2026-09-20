@@ -127,16 +127,12 @@ print(f"🔑 GEMINI_API_KEY present: {bool(gemini_api_key)}, length: {len(gemini
 
 GEMINI_AVAILABLE = False
 GEMINI_STATUS_LABEL = "Offline (Key Missing)"
-gemini_model = None
+CANDIDATE_MODELS = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-1.5-flash", "gemini-flash"]
+active_model_name = "gemini-3.6-flash"
 
 if gemini_api_key:
     try:
         genai.configure(api_key=gemini_api_key)
-        # Attempt to create model with fallback
-        try:
-            gemini_model = genai.GenerativeModel('gemini-2.0-flash')
-        except Exception:
-            gemini_model = genai.GenerativeModel('gemini-1.5-flash')
         GEMINI_AVAILABLE = True
         GEMINI_STATUS_LABEL = "Active (Gemini AI)"
         print("✅ Gemini API configured successfully!")
@@ -152,6 +148,7 @@ else:
 # ─── Prediction Function ────────────────────────────────────────────────────
 
 def predict(image):
+    global active_model_name
     if image is None:
         return {}
     if not MODEL_LOADED:
@@ -164,7 +161,7 @@ def predict(image):
         # --- Gemini OOD Filter ---
         if GEMINI_AVAILABLE:
             try:
-                print("🔍 Running Gemini OOD check...")
+                print(f"🔍 Running Gemini OOD check (trying {active_model_name})...")
                 prompt = (
                     "You are a strict plant leaf detector. Examine this image carefully.\n"
                     "Question: Is the main subject of this image clearly a plant leaf, tea leaf, or plant foliage?\n"
@@ -173,10 +170,26 @@ def predict(image):
                     "Answer ONLY with a single word: YES or NO."
                 )
                 
-                response = gemini_model.generate_content(
-                    [prompt, pil_img],
-                    generation_config={"temperature": 0.0, "max_output_tokens": 10},
-                )
+                # Try active model, fallback to others if model is retired/unavailable
+                response = None
+                last_err = None
+                models_to_try = [active_model_name] + [m for m in CANDIDATE_MODELS if m != active_model_name]
+                
+                for m_name in models_to_try:
+                    try:
+                        g_model = genai.GenerativeModel(m_name)
+                        response = g_model.generate_content(
+                            [prompt, pil_img],
+                            generation_config={"temperature": 0.0, "max_output_tokens": 10},
+                        )
+                        active_model_name = m_name
+                        break
+                    except Exception as err:
+                        last_err = err
+                        print(f"⚠️ Model {m_name} failed: {err}")
+                
+                if response is None:
+                    raise last_err
                 
                 # Check response text safely
                 answer = ""
