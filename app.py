@@ -11,7 +11,6 @@ import torch
 import torch.nn as nn
 from torchvision import transforms
 from ultralytics import YOLO
-import google.generativeai as genai
 
 # ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -69,7 +68,6 @@ class YOLO11BackboneClassifier(nn.Module):
             nn.Dropout(p=dropout),
             nn.Linear(feature_channels, num_classes)
         )
-
     def forward(self, x):
         for layer in self.backbone:
             x = layer(x)
@@ -117,130 +115,17 @@ except Exception as e:
     model = None
     MODEL_LOADED = False
 
-# ─── Gemini Setup ───────────────────────────────────────────────────────────
-
-gemini_api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-if gemini_api_key:
-    gemini_api_key = gemini_api_key.strip()
-
-print(f"🔑 GEMINI_API_KEY present: {bool(gemini_api_key)}, length: {len(gemini_api_key) if gemini_api_key else 0}")
-
-GEMINI_AVAILABLE = False
-GEMINI_STATUS_LABEL = "Offline (Key Missing)"
-cached_gemini_model = None
-
-if gemini_api_key:
-    try:
-        genai.configure(api_key=gemini_api_key)
-        GEMINI_AVAILABLE = True
-        GEMINI_STATUS_LABEL = "Active (Gemini AI)"
-        print("✅ Gemini API configured successfully!")
-    except Exception as e:
-        print(f"❌ Error configuring Gemini API: {e}")
-        GEMINI_STATUS_LABEL = f"Config Error: {e}"
-        GEMINI_AVAILABLE = False
-else:
-    print("⚠️ GEMINI_API_KEY not found in environment variables. OOD filtering disabled.")
-    GEMINI_STATUS_LABEL = "Offline (GEMINI_API_KEY missing in Space Secrets)"
-    GEMINI_AVAILABLE = False
-
-def call_gemini_ood(pil_img):
-    global cached_gemini_model
-    prompt = (
-        "You are a strict plant leaf detector. Examine this image carefully.\n"
-        "Question: Is the main subject of this image clearly a plant leaf, tea leaf, or plant foliage?\n"
-        "- If the image contains a human, person, face, animal, computer, phone, electronic device, furniture, vehicle, cartoon, meme, or any other non-plant object, you MUST answer NO.\n"
-        "- Only answer YES if the image clearly and primarily shows a plant leaf or foliage.\n"
-        "Answer ONLY with a single word: YES or NO."
-    )
-    gen_config = {"temperature": 0.0, "max_output_tokens": 10}
-
-    # If we already have a working model, try it first
-    if cached_gemini_model is not None:
-        try:
-            return cached_gemini_model.generate_content([prompt, pil_img], generation_config=gen_config)
-        except Exception as e:
-            print(f"⚠️ Cached model failed ({e}), re-discovering available models...")
-            cached_gemini_model = None
-
-    # Discover available models dynamically via ModelService.ListModels
-    candidate_names = []
-    try:
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                candidate_names.append(m.name)
-        print(f"📋 Available Gemini models from API: {candidate_names}")
-    except Exception as e:
-        print(f"⚠️ Failed to list models dynamically: {e}")
-
-    if not candidate_names:
-        candidate_names = [
-            "gemini-1.5-flash",
-            "gemini-1.5-flash-latest",
-            "gemini-1.5-pro",
-            "models/gemini-1.5-flash",
-            "models/gemini-1.5-pro",
-        ]
-
-    # Prioritize flash models first for fast inference
-    flash_models = [m for m in candidate_names if 'flash' in m.lower()]
-    other_models = [m for m in candidate_names if 'flash' not in m.lower()]
-    ordered_candidates = flash_models + other_models
-
-    last_err = None
-    for m_name in ordered_candidates:
-        try:
-            print(f"🔄 Trying Gemini model: {m_name}...")
-            g_model = genai.GenerativeModel(m_name)
-            resp = g_model.generate_content([prompt, pil_img], generation_config=gen_config)
-            cached_gemini_model = g_model
-            print(f"✅ Successfully verified with model: {m_name}")
-            return resp
-        except Exception as err:
-            last_err = err
-            print(f"⚠️ Model {m_name} failed: {err}")
-
-    raise last_err
-
 # ─── Prediction Function ────────────────────────────────────────────────────
 
 def predict(image):
     if image is None:
-        return {}
+        return {}, None
     if not MODEL_LOADED:
-        return {"Error: Model not loaded": 1.0}
+        return {"Error: Model not loaded": 1.0}, None
 
     try:
         # Ensure image is in RGB format (handles RGBA PNGs or palette images)
         pil_img = Image.fromarray(image).convert("RGB")
-        
-        # --- Gemini OOD Filter ---
-        if GEMINI_AVAILABLE:
-            try:
-                print("🔍 Running Gemini OOD check...")
-                response = call_gemini_ood(pil_img)
-                
-                # Check response text safely
-                answer = ""
-                try:
-                    answer = response.text.strip().upper()
-                except Exception as text_err:
-                    print(f"⚠️ Could not read response.text: {text_err}")
-                    # If candidate was blocked by safety filters (e.g. violent/controversial meme), it's not a leaf
-                    return {"OOD_REJECTED": True}
-                
-                print(f"🔍 Gemini response: '{answer}'")
-                
-                # If Gemini says NO, or does not say YES, reject as non-leaf
-                if "NO" in answer or "YES" not in answer:
-                    return {"OOD_REJECTED": True}
-            except Exception as e:
-                print(f"Gemini API check failed: {e}")
-                import traceback
-                traceback.print_exc()
-                return {"GEMINI_API_ERROR": str(e)}
-        else:
-            print("⚠️ Gemini not available, skipping OOD check")
         
         input_tensor = evaluation_transform(pil_img).unsqueeze(0).to(DEVICE)
         
@@ -254,9 +139,6 @@ def predict(image):
             display_name = DISPLAY_LABELS.get(cls_name, cls_name)
             result_dict[display_name] = float(prob)
         
-        if not GEMINI_AVAILABLE:
-            result_dict["_GEMINI_OFFLINE_NOTICE"] = True
-            
         return result_dict
     except Exception as e:
         return {f"Error processing image: {e}": 1.0}
@@ -268,32 +150,6 @@ def predict_and_format(image):
     if not results:
         return "<div style='color:#888; text-align:center; padding: 20px;'>Please upload an image.</div>"
     
-    # Check for OOD rejection from Gemini
-    if "OOD_REJECTED" in results:
-        return """
-        <div style='background: linear-gradient(135deg, #ff4444 0%, #cc0000 100%); border-radius: 12px; padding: 24px; margin: 10px 0; text-align: center; box-shadow: 0 4px 12px rgba(204,0,0,0.15);'>
-            <div style='font-size: 48px; margin-bottom: 12px;'>🚫</div>
-            <h3 style='color: white; margin: 0 0 8px 0; font-size: 1.3rem; font-weight: 700;'>Not a Leaf Image</h3>
-            <p style='color: rgba(255,255,255,0.95); margin: 0; font-size: 0.95rem; line-height: 1.5;'>
-                This image was identified as non-plant content (e.g., person, electronic device, meme, or object).<br>
-                Please upload a clear, focused photo of a tea leaf for accurate disease diagnosis.
-            </p>
-        </div>
-        """
-
-    if "GEMINI_API_ERROR" in results:
-        err = results["GEMINI_API_ERROR"]
-        return f"""
-        <div style='background:#fff3cd; border-left:4px solid #ffc107; padding:16px; border-radius:8px; margin:10px 0;'>
-            <h4 style='margin:0 0 6px 0; color:#856404;'>⚠️ Gemini API Verification Error</h4>
-            <p style='margin:0 0 8px 0; color:#856404; font-size:13px;'>Could not verify if this image is a leaf via Gemini API: <code>{err}</code></p>
-            <p style='margin:0; color:#666; font-size:12px;'>Please check your <code>GEMINI_API_KEY</code> in Hugging Face Space Settings.</p>
-        </div>
-        """
-    
-    # Extract offline flag if present
-    gemini_offline = results.pop("_GEMINI_OFFLINE_NOTICE", False)
-
     if "Error" in list(results.keys())[0]:
         error_msg = list(results.keys())[0]
         return f"<div style='color:#888; text-align:center; padding: 20px;'>{error_msg}</div>"
@@ -306,16 +162,6 @@ def predict_and_format(image):
 
     html = f"<div style='font-family:sans-serif; padding:8px;'>"
     
-    if gemini_offline:
-        html += """
-        <div style='background:#fff8e1; border-left:4px solid #ffa000; padding:10px 14px; border-radius:6px; margin-bottom:14px;'>
-            <div style='font-weight:600; color:#b78103; font-size:13px;'>⚠️ Non-Leaf Filter (OOD) is Offline</div>
-            <div style='color:#6d4c41; font-size:12px; margin-top:2px;'>
-                <code>GEMINI_API_KEY</code> is not configured in Space Secrets. Non-leaf filtering is disabled until key is added.
-            </div>
-        </div>
-        """
-
     if is_low_confidence:
         html += f"<div style='background:#fff3cd; border-left:4px solid #ffc107; padding:12px; border-radius:4px; margin-bottom:16px;'>"
         html += f"<p style='margin:0; color:#856404; font-size:14px;'>⚠️ <b>Low Confidence:</b> The model is unsure if this is a tea leaf. "
@@ -361,12 +207,6 @@ function() {
 }
 """
 
-status_badge = (
-    "<span style='background:#e8f5e9; color:#2e7d32; border:1px solid #a5d6a7; padding:5px 14px; border-radius:20px; font-size:0.85rem; font-weight:600; display:inline-block;'>🛡️ Non-Leaf Filter: Active (Gemini AI)</span>"
-    if GEMINI_AVAILABLE else
-    "<span style='background:#fff3e0; color:#e65100; border:1px solid #ffcc80; padding:5px 14px; border-radius:20px; font-size:0.85rem; font-weight:600; display:inline-block;'>⚠️ Non-Leaf Filter: Offline (GEMINI_API_KEY Missing in Space Secrets)</span>"
-)
-
 with gr.Blocks(theme=gr.themes.Soft(primary_hue="green", secondary_hue="emerald"), js=force_light_mode_js, title="Tea Leaf Disease Classifier") as demo:
     gr.HTML(f"""
     <div style='text-align: center; max-width: 800px; margin: 0 auto; padding-top: 10px; padding-bottom: 20px;'>
@@ -374,7 +214,6 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="green", secondary_hue="emerald"
         <p style='font-size: 1.1rem; color: #555; margin-bottom: 12px;'>
             An advanced computer vision diagnostic tool powered by a custom <b>YOLO11m Backbone</b> to instantly detect and classify 12 distinct conditions in tea leaves.
         </p>
-        <div>{status_badge}</div>
     </div>
     """)
 
